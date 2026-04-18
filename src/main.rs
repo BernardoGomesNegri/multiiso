@@ -329,6 +329,8 @@ fn main() {
     let config = copy_partitions(&iso_list.iter().map(|x| <str as AsRef<Path>>::as_ref(x)).collect::<Vec<&Path>>(), block_dev.as_ref()).unwrap_or_else(panic_with_msg);
     //rescan_device(block_dev.as_ref()).unwrap_or_else(panic_with_msg);
     write_refind_config(&config, mount_for_refind.as_ref()).unwrap_or_else(panic_with_msg);
+    run_cmd("umount", false, &[mount_for_refind]).unwrap_or_else(panic_with_msg);
+    rescan_device(&block_dev.as_ref()).unwrap_or_else(panic_with_msg);
 
     //println!("{}", write_menuentry("ubuntu 24", Uuid::new_v4()));
     /*let mut line = String::new();

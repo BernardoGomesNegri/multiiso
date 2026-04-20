@@ -317,6 +317,9 @@ fn main() {
 
     if args[1] == "--help" || args.len() < 4 {
         println!("multiiso BLOCK_DEVICE REFIND_FOLDER ISO...");
+        println!("BLOCK_DEVICE is the device to use multiiso on, usually  of the form /dev/sd*");
+        println!("REFIND_FOLDER is the folder \"refind\" from the refind zip file, avaliable at https://www.rodsbooks.com/refind/getting.html");
+        println!("ISO... are ISO files which you wish to put onto the drive. They must be suitable for use with dd and EFI.");
         return;
     }
 

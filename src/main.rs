@@ -8,40 +8,14 @@ use std::fmt::Display;
 use std::env::temp_dir;
 use std::collections::HashMap;
 use std::clone::Clone;
-use uuid::{Uuid, uuid};
-use serde_json::Value;
-
-const ESP_UUID: Uuid = uuid!("C12A7328-F81F-11D2-BA4B-00A0C93EC93B");
-const MS_BASIC_TYPE: Uuid = uuid!("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7");
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct Part {
-    number: u8,
-    start: u64,
-    size: u64,
-    type_uuid: Uuid,
-    part_uuid: Uuid,
-    name: String,
-    flag_boot: bool,
-    flag_esp: bool,
-}
+use uuid::Uuid;
+mod partition_reader;
+use partition_reader::*;
 
 fn temp_buf<T, B: Default, F: FnOnce(&mut B) -> T>(fun: F) -> (B, T) {
     let mut buf = B::default();
     let res = fun(&mut buf);
     (buf, res)
-}
-
-fn sequence<T, S: IntoIterator<Item = Option<T>>>(list: S) -> Option<Vec<T>> {
-    let mut ret: Vec<T> = Vec::new();
-    for i in list {
-        ret.push(i?);
-    }
-    Some(ret)
-}
-
-fn bytes_str_to_num(text: &str) -> Option<u64> {
-    text.split_at(text.len()-1).0.parse().ok()
 }
 
 fn parts_to_sfd_script(parts: &[Part]) -> String {
@@ -58,42 +32,6 @@ fn parts_to_sfd_script(parts: &[Part]) -> String {
         ret.push_str("\n");
     }
     ret
-}
-
-fn read_parted_json(json: &str) -> Result<Vec<Part>, &'static str> {
-    let parsed_json: Value = serde_json::from_str(json).map_err(|_| "Json incorrectly formatted")?;
-    let disk_obj = parsed_json.as_object().and_then(|obj| obj.get("disk"));
-    match disk_obj.and_then(|d| d.get("label")).and_then(|l| l.as_str()).map(|l| l == "gpt" || l == "msdos") {
-        None => {return Err("JSON incorrectly formatted");}
-        Some(false) => {return Err("Disk isn't formatted as gpt or msdos");}
-        Some(true) => (),
-    }
-    let is_gpt = disk_obj.and_then(|d| d.get("label")).and_then(|l| l.as_str()).map(|l| l == "gpt").unwrap();
-    let parts = disk_obj.and_then(|d| d.get("partitions")).and_then(|p| p.as_array());
-    // Nested lambdas!
-    parts.and_then(|partitions: &Vec<Value>| -> Option<Vec<Part>> {
-        sequence(partitions.iter().map(|part: &Value| -> Option<Part> {
-            let number = part.get("number")?.as_u64()? as u8;
-            let size = bytes_str_to_num(part.get("size")?.as_str()?)?;
-            let start = bytes_str_to_num(part.get("start")?.as_str()?)?;
-            let type_uuid = if is_gpt {uuid::Uuid::try_parse(part.get("type-uuid")?.as_str()?).ok()?} else {Uuid::nil()};
-            let part_uuid = if is_gpt {uuid::Uuid::try_parse(part.get("uuid")?.as_str()?).ok()?} else {Uuid::nil()};
-            let name = if is_gpt {part.get("name")?.as_str()?.to_owned()} else {"".to_owned()};
-            let flags = part.get("flags")?.as_array()?;
-            let flag_boot = flags.contains(&Value::String("boot".to_owned()));
-            let flag_esp = flags.contains(&Value::String("esp".to_owned()));
-            Some(Part {
-                number: number,
-                size: size,
-                start: start,
-                type_uuid: type_uuid,
-                part_uuid: part_uuid,
-                name: name,
-                flag_boot: flag_boot,
-                flag_esp: flag_esp
-            })
-        }))
-    }).ok_or("Error processing partition json")
 }
 
 fn iso_part_to_disk(p: &Part) -> Part {
@@ -115,27 +53,6 @@ fn write_menuentry(display_name: &str, part_uuid: &Uuid) -> String {
     volume {uuid}
     loader /EFI/BOOT/bootx64.efi
 }}\n", uuid=part_uuid.hyphenated())
-}
-
-fn get_parted_info(device: &Path) -> Result<String,String> {
-    let parted_result = Command::new("parted")
-        .arg(device)
-        .arg("-j")
-        .arg("unit B print")
-        .output();
-    match parted_result {
-        Err(e) => Err(format!("Error with running parted: {}", e)),
-        Ok(result) => {
-            if result.status.success() {
-                match String::from_utf8(result.stdout) {
-                    Ok(s) => Ok(s),
-                    Err(e) => Err(format!("Couldn't read parted stdout: {}", e))
-                }
-            } else {
-                Err(format!("Error with parted: {}", String::from_utf8(result.stderr).unwrap_or("could not read parted stderr".to_owned())))
-            }
-        }
-    }
 }
 
 fn run_sfd_script(wipe: bool, device: &Path, script: &str) -> Result<(), String> {
@@ -276,7 +193,7 @@ fn write_refind_config(config: &str, esp: &Path) -> Result<(),String> {
 fn copy_partitions(isos: &[&Path], device: &Path) -> Result<String, String> {
     let mut config: String = String::new();
     for iso in isos {
-        let iso_parts = read_parted_json(&get_parted_info(iso)?)?;
+        let iso_parts = get_device_parts(iso).map_err(|e| format!("Could not read partitions of disk image file {}: {}", iso.display(), e))?;
         let disk_parts = iso_parts.iter().map(iso_part_to_disk).collect::<Vec<Part>>();
         let bootable_parts_disk = disk_parts.iter().filter_map(|p| if p.type_uuid == ESP_UUID {Some(p.part_uuid)} else {None}).collect::<Vec<Uuid>>();
         let mut partn_iso_to_disk = HashMap::<u8,Uuid>::new();
@@ -286,7 +203,7 @@ fn copy_partitions(isos: &[&Path], device: &Path) -> Result<String, String> {
         println!("Creating partitions on destination device");
         run_sfd_script(false, device, &parts_to_sfd_script(&disk_parts))?;
         // Re-scan the disk to get new headers
-        let created_disk_parts = read_parted_json(&get_parted_info(device)?)?;
+        let created_disk_parts = get_device_parts(device).map_err(|e| format!("Could not read partition of disk {}: {}", device.display(), e))?;
         let mut iso_partn_to_created = HashMap::new();
         for (iso_partn, disk_guid) in partn_iso_to_disk {
             iso_partn_to_created.insert(iso_partn, created_disk_parts.iter().find(|p| p.part_uuid == disk_guid).ok_or(format!("sfdisk did not create any partition with guid {}", disk_guid))?);
@@ -314,6 +231,10 @@ fn panic_with_msg<T: Display, S>(t: T) -> S {
 
 fn main() {
     let mut args: Vec<String> = env::args().collect();
+
+    /*// Partition scan test
+    println!("{:?}", get_device_parts(args[1].as_ref()));
+    return;*/
 
     if args[1] == "--help" || args.len() < 4 {
         println!("multiiso BLOCK_DEVICE REFIND_FOLDER ISO...");

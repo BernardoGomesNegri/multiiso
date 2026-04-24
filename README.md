@@ -10,7 +10,6 @@ In addition to cargo and a Rust installation for compiling, the following progra
 - `udevadm`
 - `blockdev`
 - `mount`
-- `parted`
 - `sfdisk`
 - The `refind` folder from rEFInd, which can be obtained from the [rEFInd's binary zip file](https://www.rodsbooks.com/refind/getting.html). The folder must contain the `refind_x64.efi` file as well as the `icons`, `drivers_x64` and `tools_x64` folders.
 
@@ -33,6 +32,6 @@ Just a standard Rust build. Just run `cargo build`.
 ## Technical details and caveats
 The [EFI specification](https://uefi.org/specs/UEFI/2.10/13_Protocols_Media_Access.html#partition-discovery) defines three types of partition discovery methods in bootable removable media: [Master Boot Record (MBR) partition table](https://en.wikipedia.org/wiki/Master_boot_record), [GUID Partition Table (GPT)](https://en.wikipedia.org/wiki/GUID_Partition_Table) and [El Torito ISO 9660](https://en.wikipedia.org/wiki/ISO_9660#El_Torito). The latter is where the ".iso" extension comes from, and is meant for DVDs and CDS. However, most disk images you download from OS vendors will contain both an El Torito table and a GPT, because they want the file to be bootable both if it is recorded on a CD/DVD and if it is booted from a flash drive. No matter the partition discovery method, the contents of a disk image will usually be the same: one EFI system partition formatted as FAT, and other auxiliary partitions which may be in any format (but are typically ISO9660, to preserve compatibility with DVDs and CDs).
 
-However, this method may not work if it is not possible to read the partition table in the disk image. Currently, some ISOHybrid disk images (usually created by Debian-based distributions) do not work because the GPT in those files is incorrect (they contain overlapping partitions).
+However, this method may not work if it is not possible to read the partition table in the disk image. Currently, some ISOHybrid disk images (usually created by Debian-based distributions) do not work because the GPT in those files is incorrect (they contain overlapping partitions). Because this method puts multiple partitions in one disk image, there may be issues when using multiple similar Linux distributions, as they can't differentiate between their auxiliary partition and a similar distribution's auxiliary partition.
 
 How multiiso works is that it copies the EFI system partition and auxiliary partitions from every ISO file to the flash drive, then setups rEFInd as a menu to allow you to boot into any of the other EFI partitions. This method can be more reliable than ventoy, as it does not rely on creating a virtual EFI device or accessing the Linux device mapper after boot but before the OS is loaded. However, strangely formatted disk images can cause the process to fail.
